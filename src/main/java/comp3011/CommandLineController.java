@@ -32,6 +32,7 @@ public class CommandLineController {
     private Integer displayId;
     private File videoFile;
     private String errorMessage;
+    private final List<FrameProcessorOption> frameProcessorOptions = new ArrayList<>();
 
     public CommandLineController(String[] args) {
         this.args = args.clone();
@@ -68,6 +69,10 @@ public class CommandLineController {
         return maximiseRequested;
     }
 
+    public List<FrameProcessorOption> getFrameProcessorOptions() {
+        return List.copyOf(frameProcessorOptions);
+    }
+
     public boolean shouldLaunchApplication() {
         return errorMessage == null && videoFile != null;
     }
@@ -75,41 +80,84 @@ public class CommandLineController {
     private void parse() {
         List<String> videoFiles = new ArrayList<>();
         for (String arg : args) {
-            if ("-h".equals(arg) || "--help".equals(arg)) {
+            if ("--help".equals(arg)) {
                 helpRequested = true;
-            } else if ("-a".equals(arg) || "--audio".equals(arg)) {
+            } else if ("--audio".equals(arg)) {
                 audioRequested = true;
-            } else if ("-x".equals(arg) || "--maximise".equals(arg)) {
+            } else if ("--maximise".equals(arg)) {
                 maximiseRequested = true;
-            } else if ("-1".equals(arg) || "--monitor-1".equals(arg)) {
+            } else if ("--monitor-1".equals(arg)) {
                 setDisplayId(1);
-            } else if ("-2".equals(arg) || "--monitor-2".equals(arg)) {
+            } else if ("--monitor-2".equals(arg)) {
                 setDisplayId(2);
+            } else if (arg.startsWith("--")) {
+                parseLongOption(arg);
             } else if (arg.startsWith("-")) {
-                errorMessage = "Unknown option: " + arg;
+                parseShortOptions(arg);
             } else {
                 videoFiles.add(arg);
             }
         }
 
         if (videoFiles.size() > 1) {
-            errorMessage = "Usage: VideoPlayer [options] [video-file]";
+            setErrorMessage("Usage: VideoPlayer [options] [video-file]");
         } else if (videoFiles.size() == 1) {
             videoFile = new File(videoFiles.get(0));
             if (!videoFile.isFile()) {
-                errorMessage = "File not found: " + videoFile.getPath();
+                setErrorMessage("File not found: " + videoFile.getPath());
                 videoFile = null;
             }
         } else {
-            if (!helpRequested) {
-                errorMessage = "No video file specified.";
+            if (!helpRequested && errorMessage == null) {
+                setErrorMessage("No video file specified.");
             }
+        }
+    }
+
+    private void parseLongOption(String arg) {
+        FrameProcessorOption option = FrameProcessorOption.fromLongName(arg).orElse(null);
+        if (option == null) {
+            setErrorMessage("Unknown option: " + arg);
+            return;
+        }
+        frameProcessorOptions.add(option);
+    }
+
+    private void parseShortOptions(String arg) {
+        if (arg.length() == 1) {
+            setErrorMessage("Unknown option: " + arg);
+            return;
+        }
+
+        for (int i = 1; i < arg.length(); i++) {
+            char shortName = arg.charAt(i);
+            switch (shortName) {
+                case 'h' -> helpRequested = true;
+                case 'a' -> audioRequested = true;
+                case 'x' -> maximiseRequested = true;
+                case '1' -> setDisplayId(1);
+                case '2' -> setDisplayId(2);
+                default -> {
+                    FrameProcessorOption option = FrameProcessorOption.fromShortName(shortName).orElse(null);
+                    if (option == null) {
+                        setErrorMessage("Unknown option: " + arg);
+                        return;
+                    }
+                    frameProcessorOptions.add(option);
+                }
+            }
+        }
+    }
+
+    private void setErrorMessage(String message) {
+        if (errorMessage == null) {
+            errorMessage = message;
         }
     }
 
     private void setDisplayId(int displayId) {
         if (this.displayId != null && this.displayId != displayId) {
-            errorMessage = "Only one display option can be used";
+            setErrorMessage("Only one display option can be used");
             return;
         }
         this.displayId = displayId;
