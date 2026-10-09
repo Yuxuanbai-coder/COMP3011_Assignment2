@@ -4,7 +4,7 @@
  * 
  * Authors:
  *   1. Simon Ratcliffe, in collaboration with GPT-5.6 Terra
- *   2. <student name and student number insert here upon modification>
+ *   2. Yuxuan Bai (a2993969), with OpenAI Codex AI assistance.
  *
  * Copyright 2026 Simon Ratcliffe
  */
@@ -102,6 +102,7 @@ public class VideoPlayerModel {
         this.statusChangedHandler = statusChangedHandler;
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
+        // The model owns the processor instances; mapping the ordered selections here preserves order and repetitions.
         this.frameProcessors = frameProcessorOptions.stream()
                 .map(FrameProcessorOption::createProcessor)
                 .toList();

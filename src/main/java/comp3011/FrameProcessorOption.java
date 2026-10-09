@@ -3,7 +3,7 @@
  * Students are free to modify this file for assessment purposes.
  *
  * Authors:
- *   1. <student name and student number insert here upon modification>
+ *   1. Yuxuan Bai (a2993969), with OpenAI Codex AI assistance.
  */
 package comp3011;
 
@@ -11,7 +11,12 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 /**
- * Maps each command-line frame-processor option to the processor it creates.
+ * Registry for the command-line frame-processor options.
+ *
+ * <p>Each entry connects a short option and a long option to a processor factory.
+ * Add a new command-line effect here to keep its names and construction rule in
+ * one discoverable place. The factory creates a fresh processor for each option
+ * occurrence, so repeated options remain separate stages in the effect sequence.</p>
  */
 public enum FrameProcessorOption {
     NUMBER_FRAMES('n', "--number-frames", FrameNumberer::new),
