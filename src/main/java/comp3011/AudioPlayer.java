@@ -28,8 +28,8 @@ import org.bytedeco.javacv.Frame;
  * <p>
  * Converts supported packed or planar 16-bit sample buffers to the
  * interleaved, little-endian PCM format required by {@link SourceDataLine}.
- * {@link VideoPlayerModel} singleton schedules when the resulting audio is
- * written and owns the AudioPlayer.
+ * The playback worker converts samples into independent PCM packets, while a
+ * dedicated audio-output worker owns this class and writes those packets.
  * </p>
  */
 public class AudioPlayer implements AutoCloseable {
@@ -37,11 +37,10 @@ public class AudioPlayer implements AutoCloseable {
     private static final int AUDIO_WARMUP_BYTES = 4096;
 
     private SourceDataLine line; // Java Sound's audio-output interface - for us a destination, not a source.
-    private byte[] outputBuffer = new byte[0];
 
     public void open(int sampleRate, int channels) throws LineUnavailableException {
         if (sampleRate <= 0 || channels <= 0) {
-            return;
+            throw new IllegalArgumentException("The media has invalid audio format metadata.");
         }
 
         AudioFormat format = new AudioFormat(sampleRate, 16, channels, true, false);
@@ -51,19 +50,51 @@ public class AudioPlayer implements AutoCloseable {
         warmUpLine();
     }
 
-    public byte[] copySamples(Frame frame) {
+    /** Converts supported decoded samples to independent interleaved little-endian PCM bytes. */
+    public static byte[] copySamples(Frame frame) {
         if (frame.samples == null || frame.samples.length == 0) {
             return new byte[0];
         }
 
-        int byteCount = copySamplesToOutputBuffer(frame);
-        if (byteCount <= 0) {
-            return new byte[0];
+        Buffer[] samples = frame.samples;
+        int channels = frame.audioChannels;
+
+        if (channels > 1 && samples.length == channels && samples[0] instanceof ShortBuffer) {
+            ShortBuffer[] planarSamples = new ShortBuffer[channels];
+            int sampleCount = Integer.MAX_VALUE;
+
+            for (int channel = 0; channel < channels; channel++) {
+                if (!(samples[channel] instanceof ShortBuffer channelSamples)) {
+                    return new byte[0];
+                }
+                planarSamples[channel] = channelSamples.duplicate();
+                sampleCount = Math.min(sampleCount, planarSamples[channel].remaining());
+            }
+
+            if (sampleCount <= 0 || sampleCount == Integer.MAX_VALUE) {
+                return new byte[0];
+            }
+            byte[] pcm = new byte[sampleCount * channels * Short.BYTES];
+            int outputIndex = 0;
+            for (int sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+                for (ShortBuffer channelSamples : planarSamples) {
+                    outputIndex = writeLittleEndian(pcm, outputIndex, channelSamples.get());
+                }
+            }
+            return pcm;
         }
 
-        byte[] samples = new byte[byteCount];
-        System.arraycopy(outputBuffer, 0, samples, 0, byteCount);
-        return samples;
+        if (samples[0] instanceof ShortBuffer packedSamples) {
+            ShortBuffer source = packedSamples.duplicate();
+            byte[] pcm = new byte[source.remaining() * Short.BYTES];
+            int outputIndex = 0;
+            while (source.hasRemaining()) {
+                outputIndex = writeLittleEndian(pcm, outputIndex, source.get());
+            }
+            return pcm;
+        }
+
+        return new byte[0];
     }
 
     public int write(byte[] samples, int offset, int length) {
@@ -101,13 +132,33 @@ public class AudioPlayer implements AutoCloseable {
         }
     }
 
+    /** Waits until the sound already written to the device has played. */
+    public void drain() {
+        if (line != null) {
+            line.drain();
+        }
+    }
+
     @Override
     public void close() {
-        if (line != null) {
-            line.stop();
-            line.flush();
-            line.close();
-            line = null;
+        SourceDataLine closingLine = line;
+        line = null;
+        if (closingLine != null) {
+            try {
+                closingLine.stop();
+            } catch (RuntimeException e) {
+                // The device may not have finished opening when an error occurred.
+            }
+            try {
+                closingLine.flush();
+            } catch (RuntimeException e) {
+                // Continue to close the device even if it never started.
+            }
+            try {
+                closingLine.close();
+            } catch (RuntimeException e) {
+                // The line is already closed.
+            }
         }
     }
 
@@ -122,63 +173,10 @@ public class AudioPlayer implements AutoCloseable {
         line.flush(); // Get rid of the rest straight away, hopefully warm up is done.
     }
 
-    // This is a little tedious but handles channel interleaved stereo audio (normal) and also 'packed' audio where
-    // there is a chunk of left speaker followed by a chunk of right speaker (unusual, and needs conversion).
-    private int copySamplesToOutputBuffer(Frame frame) {
-        Buffer[] samples = frame.samples;
-        int channels = frame.audioChannels;
-
-        if (channels > 1 && samples.length == channels && samples[0] instanceof ShortBuffer) {
-            ShortBuffer[] planarSamples = new ShortBuffer[channels];
-            int sampleCount = Integer.MAX_VALUE;
-
-            for (int channel = 0; channel < channels; channel++) {
-                if (!(samples[channel] instanceof ShortBuffer channelSamples)) {
-                    return 0;
-                }
-                planarSamples[channel] = channelSamples.duplicate();
-                sampleCount = Math.min(sampleCount, planarSamples[channel].remaining());
-            }
-
-            ensureOutputBufferCapacity(sampleCount * channels * Short.BYTES);
-            return copyPlanarSamples(planarSamples, sampleCount);
-        }
-
-        if (samples[0] instanceof ShortBuffer packedSamples) {
-            ShortBuffer source = packedSamples.duplicate();
-            ensureOutputBufferCapacity(source.remaining() * Short.BYTES);
-            return copyPackedSamples(source);
-        }
-
-        return 0;
-    }
-
-    private int copyPackedSamples(ShortBuffer source) {
-        int outputIndex = 0;
-        while (source.hasRemaining()) {
-            short sample = source.get();
-            outputBuffer[outputIndex++] = (byte) (sample & 0xff);
-            outputBuffer[outputIndex++] = (byte) ((sample >> 8) & 0xff);
-        }
-        return outputIndex;
-    }
-
-    private int copyPlanarSamples(ShortBuffer[] planarSamples, int sampleCount) {
-        int outputIndex = 0;
-        for (int sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
-            for (ShortBuffer channelSamples : planarSamples) {
-                short sample = channelSamples.get();
-                outputBuffer[outputIndex++] = (byte) (sample & 0xff);
-                outputBuffer[outputIndex++] = (byte) ((sample >> 8) & 0xff);
-            }
-        }
-        return outputIndex;
-    }
-
-    private void ensureOutputBufferCapacity(int byteCount) {
-        if (outputBuffer.length < byteCount) {
-            outputBuffer = new byte[byteCount];
-        }
+    private static int writeLittleEndian(byte[] destination, int offset, short sample) {
+        destination[offset++] = (byte) (sample & 0xff);
+        destination[offset++] = (byte) ((sample >> 8) & 0xff);
+        return offset;
     }
 
 }

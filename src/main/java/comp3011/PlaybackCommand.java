@@ -25,6 +25,12 @@ sealed interface PlaybackCommand {
     record SeekBy(long offsetUs) implements PlaybackCommand {
     }
 
+    record AudioFailure(long playbackGeneration, String message) implements PlaybackCommand {
+        public AudioFailure {
+            Objects.requireNonNull(message, "message");
+        }
+    }
+
     enum TogglePause implements PlaybackCommand {
         INSTANCE
     }
