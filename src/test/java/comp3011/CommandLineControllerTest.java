@@ -178,8 +178,8 @@ class CommandLineControllerTest {
                 "  -m, --mottle-frames    Add cloudy emulsion mottling",
                 "  -b, --bleed-frames     Bleed light into frames",
                 "  -p, --pepper-frames    Pepper frames with dark spots/blotches",
-                "Frame processors are applied in command-line order and may be repeated.",
                 "",
+                "Frame processors are applied in command-line order and may be repeated.",
                 "Example: -nssnfwyvdjmbp numbers, scratches twice, numbers again, flickers,",
                 "converts, warms, vignettes, dusts, jitters, mottles, bleeds, then peppers.")
                 + System.lineSeparator();
