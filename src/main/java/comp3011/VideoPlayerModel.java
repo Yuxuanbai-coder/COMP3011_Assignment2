@@ -495,6 +495,7 @@ public class VideoPlayerModel {
             long relativeTimestampUs = Math.max(0, timestampUs - firstTimestampUs);
             long logicalTimestampUs = logicalPlaybackBaseUs + relativeTimestampUs;
             long targetTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
+            currentTimestampUs = logicalTimestampUs;
 
             return new PreparedFrame(
                     playbackGeneration,
@@ -676,7 +677,11 @@ public class VideoPlayerModel {
             reportAudioFailure(state, e);
         } finally {
             closeAudioOutput(state);
-            playbackEvents.offer(PlaybackEvent.ShutdownComplete.INSTANCE);
+            // An audio-device failure must not stop JavaFX's frame timer. This event is
+            // reserved for an intentional application shutdown.
+            if (shutdownRequested || shutdownCommandQueued.get() || state.shutdownRequested) {
+                playbackEvents.offer(PlaybackEvent.ShutdownComplete.INSTANCE);
+            }
         }
     }
 
@@ -798,8 +803,10 @@ public class VideoPlayerModel {
                 ? videoDurationUs
                 : currentTimestampUs;
 
+        // Decoding has ended, but already prepared frames still need to reach JavaFX.
+        // Keep the playback clock active so the audio worker can drain its final packets.
+        pauseRequested = false;
         closePlaybackResources(true);
-        pauseRequested = true;
         currentTimestampUs = endTimestampUs;
         displayedTimestampUs.set(endTimestampUs);
         relativeSeekBaseUs.set(endTimestampUs);
@@ -824,8 +831,8 @@ public class VideoPlayerModel {
 
     private void closePlaybackResources(boolean drainAudio) {
         playbackOpen = false;
-        preparedFrames.clear();
         if (!drainAudio) {
+            preparedFrames.clear();
             audioPackets.clear();
             audioClock.set(new AudioClock(playbackGeneration, NO_SEEK_REQUEST, 0, true, false));
             if (audioOutputOpenRequested) {
