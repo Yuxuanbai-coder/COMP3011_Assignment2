@@ -43,6 +43,8 @@ public class FrameBleeder extends FrameProcessor {
     private double[] xMaskBlend;
     private int[] yMaskTop;
     private double[] yMaskBlend;
+    private double[] brightnessLookup;
+    private double[] horizontallySampledMask;
 
     public FrameBleeder() {
         super();
@@ -57,6 +59,11 @@ public class FrameBleeder extends FrameProcessor {
         brightMask = new double[maskWidth * maskHeight];
         horizontalBlurMask = new double[brightMask.length];
         blurredMask = new double[brightMask.length];
+        brightnessLookup = new double[256];
+        for (int luminance = 0; luminance < 256; luminance++) {
+            brightnessLookup[luminance] = thresholdedBrightness(luminance);
+        }
+        horizontallySampledMask = new double[maskHeight * videoInfo.imageWidth()];
         buildSamplingLookups();
     }
 
@@ -80,6 +87,7 @@ public class FrameBleeder extends FrameProcessor {
 
         buildBrightMask(pixels);
         blurBrightMask();
+        sampleMaskHorizontally();
         applyBleed(pixels);
     }
 
@@ -145,7 +153,7 @@ public class FrameBleeder extends FrameProcessor {
                     }
                 }
 
-                brightMask[maskY * maskWidth + maskX] = thresholdedBrightness(maximumLuminance);
+                brightMask[maskY * maskWidth + maskX] = brightnessLookup[maximumLuminance];
             }
         }
     }
@@ -199,6 +207,25 @@ public class FrameBleeder extends FrameProcessor {
         }
     }
 
+    private void sampleMaskHorizontally() {
+        int width = videoInfo.imageWidth();
+
+        for (int maskY = 0; maskY < maskHeight; maskY++) {
+            int maskRow = maskY * maskWidth;
+            int outputRow = maskY * width;
+
+            for (int x = 0; x < width; x++) {
+                int x0 = xMaskLeft[x];
+                int x1 = Math.min(x0 + 1, maskWidth - 1);
+
+                horizontallySampledMask[outputRow + x] = lerp(
+                        blurredMask[maskRow + x0],
+                        blurredMask[maskRow + x1],
+                        xMaskBlend[x]);
+            }
+        }
+    }
+
     private void applyBleed(ByteBuffer pixels) {
         int width = videoInfo.imageWidth();
         int height = videoInfo.imageHeight();
@@ -227,17 +254,13 @@ public class FrameBleeder extends FrameProcessor {
     }
 
     private double sampleBlurredMask(int x, int y) {
-        int x0 = xMaskLeft[x];
-        int x1 = Math.min(x0 + 1, maskWidth - 1);
-        double xBlend = xMaskBlend[x];
-
+        int width = videoInfo.imageWidth();
         int y0 = yMaskTop[y];
         int y1 = Math.min(y0 + 1, maskHeight - 1);
-        double yBlend = yMaskBlend[y];
 
-        double top = lerp(blurredMask[y0 * maskWidth + x0], blurredMask[y0 * maskWidth + x1], xBlend);
-        double bottom = lerp(blurredMask[y1 * maskWidth + x0], blurredMask[y1 * maskWidth + x1], xBlend);
-        return Math.min(1.0, lerp(top, bottom, yBlend) * BLEED_MASK_GAIN);
+        double top = horizontallySampledMask[y0 * width + x];
+        double bottom = horizontallySampledMask[y1 * width + x];
+        return Math.min(1.0, lerp(top, bottom, yMaskBlend[y]) * BLEED_MASK_GAIN);
     }
 
     private byte boostedByte(byte value, int boost) {
