@@ -419,8 +419,14 @@ public class VideoPlayerModel {
             return;
         }
 
-        PreparedFrame frame;
-        while ((frame = preparedFrames.poll()) != null) {
+        // Reinsert only the frames that were queued when retiming began.
+        // Polling until empty would revisit each reinserted frame forever.
+        int queuedFrameCount = preparedFrames.size();
+        for (int index = 0; index < queuedFrameCount; index++) {
+            PreparedFrame frame = preparedFrames.poll();
+            if (frame == null) {
+                break;
+            }
             preparedFrames.offer(new PreparedFrame(
                     frame.playbackGeneration(),
                     frame.image(),
