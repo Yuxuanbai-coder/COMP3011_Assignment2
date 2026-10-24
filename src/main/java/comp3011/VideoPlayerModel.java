@@ -48,6 +48,7 @@ public class VideoPlayerModel {
     private static final int AUDIO_QUEUE_CAPACITY = 64;
 
     private final List<FrameProcessor> frameProcessors;
+    private final PlaybackProfiler playbackProfiler;
     // The playback worker consumes commands and produces frames and UI events.
     private final BlockingQueue<PlaybackCommand> playbackCommands = new LinkedBlockingQueue<>();
     private final BlockingQueue<PreparedFrame> preparedFrames = new ArrayBlockingQueue<>(FRAME_QUEUE_CAPACITY);
@@ -129,6 +130,7 @@ public class VideoPlayerModel {
         this.frameProcessors = frameProcessorOptions.stream()
                 .map(FrameProcessorOption::createProcessor)
                 .toList();
+        playbackProfiler = new PlaybackProfiler(this.frameProcessors);
 
         audioOutputWorker = new Thread(this::runAudioOutputWorker, "video-audio-output-worker");
         audioOutputWorker.setDaemon(true);
@@ -447,7 +449,11 @@ public class VideoPlayerModel {
 
     private PreparedFrame readNextVideoFrame() throws Exception {
         while (playbackOpen) {
+            long decodeStartedNs = playbackProfiler.enabled() ? System.nanoTime() : 0;
             Frame frame = grabFrame();
+            if (playbackProfiler.enabled()) {
+                playbackProfiler.recordDecode(System.nanoTime() - decodeStartedNs);
+            }
             if (frame == null) {
                 finishPlayback();
                 return null;
@@ -491,7 +497,12 @@ public class VideoPlayerModel {
             InfoFrame info = new InfoFrame(frameNumber, timestampUs);
             processFrame(frame, info);
 
+            long conversionStartedNs = playbackProfiler.enabled() ? System.nanoTime() : 0;
             Image image = converter.convert(frame);
+            if (playbackProfiler.enabled()) {
+                playbackProfiler.recordConversion(System.nanoTime() - conversionStartedNs);
+                playbackProfiler.recordCompletedFrame();
+            }
             long relativeTimestampUs = Math.max(0, timestampUs - firstTimestampUs);
             long logicalTimestampUs = logicalPlaybackBaseUs + relativeTimestampUs;
             long targetTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
@@ -585,6 +596,7 @@ public class VideoPlayerModel {
             return;
         }
 
+        long copyStartedNs = playbackProfiler.enabled() ? System.nanoTime() : 0;
         byte[] samples = AudioPlayer.copySamples(frame);
         if (samples.length > 0) {
             AudioPacket packet = new AudioPacket(playbackGeneration, timestampUs, samples);
@@ -594,6 +606,9 @@ public class VideoPlayerModel {
                 audioPackets.poll();
                 audioPackets.offer(packet);
             }
+        }
+        if (playbackProfiler.enabled()) {
+            playbackProfiler.recordAudioCopy(System.nanoTime() - copyStartedNs);
         }
     }
 
@@ -901,8 +916,13 @@ public class VideoPlayerModel {
     }
 
     private void processFrame(Frame frame, InfoFrame info) throws Exception {
-        for (FrameProcessor processor : frameProcessors) {
+        for (int index = 0; index < frameProcessors.size(); index++) {
+            FrameProcessor processor = frameProcessors.get(index);
+            long processorStartedNs = playbackProfiler.enabled() ? System.nanoTime() : 0;
             processor.process(frame, info);
+            if (playbackProfiler.enabled()) {
+                playbackProfiler.recordProcessor(index, System.nanoTime() - processorStartedNs);
+            }
         }
     }
 
