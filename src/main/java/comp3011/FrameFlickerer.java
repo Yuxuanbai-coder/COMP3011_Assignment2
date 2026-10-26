@@ -79,13 +79,13 @@ public class FrameFlickerer extends FrameProcessor {
         int widthBytes = videoInfo.imageWidth() * videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
-        for (int y = 0; y < height; y++) {
+        forEachRow(height, y -> {
             int rowStart = y * stride;
             for (int offset = 0; offset < widthBytes; offset++) {
                 int index = rowStart + offset;
                 pixels.put(index, dimLookup[Byte.toUnsignedInt(pixels.get(index))]);
             }
-        }
+        });
     }
 
     private int clamp(int value, int min, int max) {

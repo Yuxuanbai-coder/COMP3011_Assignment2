@@ -121,7 +121,32 @@ public class FrameVignetter extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
-        for (int y = 0; y < height; y++) {
+        if (channels == 3) {
+            forEachRow(height, y -> {
+                int rowStart = y * stride;
+                byte[] yLookup = yLookups[y];
+
+                for (int x = 0; x < width; x++) {
+                    int base = rowStart + x * 3;
+                    byte[] xLookup = xLookups[x];
+
+                    int blue = Byte.toUnsignedInt(pixels.get(base));
+                    int green = Byte.toUnsignedInt(pixels.get(base + 1));
+                    int red = Byte.toUnsignedInt(pixels.get(base + 2));
+
+                    blue = Byte.toUnsignedInt(xLookup[blue]);
+                    green = Byte.toUnsignedInt(xLookup[green]);
+                    red = Byte.toUnsignedInt(xLookup[red]);
+
+                    pixels.put(base, yLookup[blue]);
+                    pixels.put(base + 1, yLookup[green]);
+                    pixels.put(base + 2, yLookup[red]);
+                }
+            });
+            return;
+        }
+
+        forEachRow(height, y -> {
             int rowStart = y * stride;
             byte[] yLookup = yLookups[y];
 
@@ -136,7 +161,7 @@ public class FrameVignetter extends FrameProcessor {
                     pixels.put(index, yLookup[value]);
                 }
             }
-        }
+        });
     }
 
     private int clamp(int value, int min, int max) {

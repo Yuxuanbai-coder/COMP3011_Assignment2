@@ -134,12 +134,12 @@ public class FrameJitterer extends FrameProcessor {
         source.clear();
         source.get(sourcePixels, 0, frameBytes);
 
-        for (int y = 0; y < height; y++) {
+        forEachRow(height, y -> {
             ByteBuffer destinationRow = pixels.duplicate();
             destinationRow.clear();
             destinationRow.position(y * stride);
             destinationRow.put(blackRow, 0, widthBytes);
-        }
+        });
 
         int sourceYStart = Math.max(0, -yOffset);
         int destinationYStart = Math.max(0, yOffset);
@@ -153,7 +153,7 @@ public class FrameJitterer extends FrameProcessor {
         int destinationXByteStart = destinationXStart * channels;
         int rowBytesToCopy = pixelsToCopy * channels;
 
-        for (int row = 0; row < rowsToCopy; row++) {
+        forEachRow(rowsToCopy, row -> {
             int sourceIndex = (sourceYStart + row) * stride + sourceXByteStart;
             int destinationIndex = (destinationYStart + row) * stride + destinationXByteStart;
 
@@ -161,6 +161,6 @@ public class FrameJitterer extends FrameProcessor {
             destination.clear();
             destination.position(destinationIndex);
             destination.put(sourcePixels, sourceIndex, rowBytesToCopy);
-        }
+        });
     }
 }

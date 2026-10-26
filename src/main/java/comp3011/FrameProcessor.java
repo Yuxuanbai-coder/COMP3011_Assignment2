@@ -11,6 +11,9 @@
 package comp3011;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveAction;
+import java.util.function.IntConsumer;
 import java.util.zip.CRC32;
 
 import org.bytedeco.javacv.Frame;
@@ -30,6 +33,9 @@ import org.bytedeco.javacv.Frame;
  * </p>
  */
 public abstract class FrameProcessor {
+    private static final int ROWS_PER_PARALLEL_TASK = 16;
+    private static final int MIN_PARALLEL_ROW_COUNT = ROWS_PER_PARALLEL_TASK * 3;
+
     protected InfoVideo videoInfo;
 
     public FrameProcessor() {
@@ -55,4 +61,47 @@ public abstract class FrameProcessor {
     }
 
     public abstract void process(Frame frame, InfoFrame info) throws Exception;
+
+    /**
+     * Applies a row-independent image operation using the shared fork-join pool.
+     * Small images stay on the calling thread to avoid task overhead. Callers must
+     * ensure each row writes to a disjoint part of the frame or workspace.
+     */
+    protected final void forEachRow(int rowCount, IntConsumer rowOperation) {
+        if (rowCount < MIN_PARALLEL_ROW_COUNT || ForkJoinPool.getCommonPoolParallelism() <= 1) {
+            for (int row = 0; row < rowCount; row++) {
+                rowOperation.accept(row);
+            }
+            return;
+        }
+
+        ForkJoinPool.commonPool().invoke(new RowRangeAction(0, rowCount, rowOperation));
+    }
+
+    private static final class RowRangeAction extends RecursiveAction {
+        private final int startRow;
+        private final int endRow;
+        private final IntConsumer rowOperation;
+
+        private RowRangeAction(int startRow, int endRow, IntConsumer rowOperation) {
+            this.startRow = startRow;
+            this.endRow = endRow;
+            this.rowOperation = rowOperation;
+        }
+
+        @Override
+        protected void compute() {
+            if (endRow - startRow <= ROWS_PER_PARALLEL_TASK) {
+                for (int row = startRow; row < endRow; row++) {
+                    rowOperation.accept(row);
+                }
+                return;
+            }
+
+            int middleRow = startRow + (endRow - startRow) / 2;
+            invokeAll(
+                    new RowRangeAction(startRow, middleRow, rowOperation),
+                    new RowRangeAction(middleRow, endRow, rowOperation));
+        }
+    }
 }

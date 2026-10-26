@@ -119,7 +119,7 @@ public class FrameYellower extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
-        for (int y = 0; y < height; y++) {
+        forEachRow(height, y -> {
             int rowStart = y * stride;
             for (int x = 0; x < width; x++) {
                 int base = rowStart + x * channels;
@@ -128,7 +128,7 @@ public class FrameYellower extends FrameProcessor {
                 pixels.put(base + 1, greenLookup[Byte.toUnsignedInt(pixels.get(base + 1))]);
                 pixels.put(base + 2, redLookup[Byte.toUnsignedInt(pixels.get(base + 2))]);
             }
-        }
+        });
     }
 
     private int clamp(int value, int min, int max) {

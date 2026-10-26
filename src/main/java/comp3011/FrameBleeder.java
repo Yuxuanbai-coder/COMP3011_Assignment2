@@ -131,7 +131,7 @@ public class FrameBleeder extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
-        for (int maskY = 0; maskY < maskHeight; maskY++) {
+        forEachRow(maskHeight, maskY -> {
             int blockY = maskY * MASK_BLOCK_SIZE;
             int blockYEnd = Math.min(blockY + MASK_BLOCK_SIZE, height);
 
@@ -155,7 +155,7 @@ public class FrameBleeder extends FrameProcessor {
 
                 brightMask[maskY * maskWidth + maskX] = brightnessLookup[maximumLuminance];
             }
-        }
+        });
     }
 
     private double thresholdedBrightness(int luminance) {
@@ -173,7 +173,7 @@ public class FrameBleeder extends FrameProcessor {
     }
 
     private void blurHorizontally(double[] source, double[] destination) {
-        for (int y = 0; y < maskHeight; y++) {
+        forEachRow(maskHeight, y -> {
             int rowStart = y * maskWidth;
             for (int x = 0; x < maskWidth; x++) {
                 double total = 0.0;
@@ -187,11 +187,11 @@ public class FrameBleeder extends FrameProcessor {
 
                 destination[rowStart + x] = total / samples;
             }
-        }
+        });
     }
 
     private void blurVertically(double[] source, double[] destination) {
-        for (int y = 0; y < maskHeight; y++) {
+        forEachRow(maskHeight, y -> {
             for (int x = 0; x < maskWidth; x++) {
                 double total = 0.0;
                 int samples = 0;
@@ -204,13 +204,13 @@ public class FrameBleeder extends FrameProcessor {
 
                 destination[y * maskWidth + x] = total / samples;
             }
-        }
+        });
     }
 
     private void sampleMaskHorizontally() {
         int width = videoInfo.imageWidth();
 
-        for (int maskY = 0; maskY < maskHeight; maskY++) {
+        forEachRow(maskHeight, maskY -> {
             int maskRow = maskY * maskWidth;
             int outputRow = maskY * width;
 
@@ -223,7 +223,7 @@ public class FrameBleeder extends FrameProcessor {
                         blurredMask[maskRow + x1],
                         xMaskBlend[x]);
             }
-        }
+        });
     }
 
     private void applyBleed(ByteBuffer pixels) {
@@ -232,7 +232,7 @@ public class FrameBleeder extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
-        for (int y = 0; y < height; y++) {
+        forEachRow(height, y -> {
             int rowStart = y * stride;
 
             for (int x = 0; x < width; x++) {
@@ -250,7 +250,7 @@ public class FrameBleeder extends FrameProcessor {
                 pixels.put(base + 1, boostedByte(pixels.get(base + 1), greenBoost));
                 pixels.put(base + 2, boostedByte(pixels.get(base + 2), redBoost));
             }
-        }
+        });
     }
 
     private double sampleBlurredMask(int x, int y) {

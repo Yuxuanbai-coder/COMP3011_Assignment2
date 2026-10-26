@@ -23,7 +23,7 @@ import org.bytedeco.javacv.Frame;
  * <p>
  * Initialisation builds multi-scale noise fields and colour lookup tables.
  * {@link #process(Frame, InfoFrame)} samples those fields in image blocks and
- * applies the selected channel scales through {@link #applyMottleBlock(ByteBuffer, int, int, int, int, int, int)}.
+ * applies the selected channel scales through {@link #applyMottleBlock(ByteBuffer, int, int, int, int, int, int, int)}.
  * </p>
  */
 public class FrameMottler extends FrameProcessor {
@@ -40,6 +40,8 @@ public class FrameMottler extends FrameProcessor {
     private static final double DAMAGE_MASK_THRESHOLD = 0.55;
     private static final int EFFECT_BLOCK_SIZE = 4;
     private static final int SCALE_LOOKUP_SIZE = 512;
+    private static final int SCALE_INDEX_BITS = 9;
+    private static final int SCALE_INDEX_MASK = SCALE_LOOKUP_SIZE - 1;
     private static final double MAX_DARKEN_PERCENTAGE = 18.0;
     private static final double MAX_LIGHTEN_PERCENTAGE = 5.0;
     private static final double STAIN_THRESHOLD = 0.35;
@@ -65,12 +67,18 @@ public class FrameMottler extends FrameProcessor {
     private double[] xGridBlend;
     private int[] yGridTop;
     private double[] yGridBlend;
+    private int[] smoothingNeighbourIndices;
+    private double[] noiseWorkspaceA;
+    private double[] noiseWorkspaceB;
+    private double[] fineNoiseField;
+    private double[] mediumNoiseField;
+    private double[] largeNoiseField;
+    private double[] brightnessField;
+    private double[] stainField;
     private byte[][] scaleLookups;
     private double minimumScale;
     private double maximumScale;
-    private int blockBlueScaleIndex;
-    private int blockGreenScaleIndex;
-    private int blockRedScaleIndex;
+    private final Random noiseRandom = new Random();
 
     public FrameMottler() {
         super();
@@ -81,7 +89,19 @@ public class FrameMottler extends FrameProcessor {
     public void initialise(InfoVideo videoInfo) throws Exception {
         super.initialise(videoInfo);
         mediaSeed = saltedMediaSeed(videoInfo.mediaName(), instanceIndex + SEED_SALT);
+        cachedDamageMaskSegment = Integer.MIN_VALUE;
         buildSamplingLookups();
+        int noiseFieldSize = NOISE_GRID_WIDTH * NOISE_GRID_HEIGHT;
+        smoothingNeighbourIndices = buildSmoothingNeighbourIndices();
+        noiseWorkspaceA = new double[noiseFieldSize];
+        noiseWorkspaceB = new double[noiseFieldSize];
+        fineNoiseField = new double[noiseFieldSize];
+        mediumNoiseField = new double[noiseFieldSize];
+        largeNoiseField = new double[noiseFieldSize];
+        brightnessField = new double[noiseFieldSize];
+        stainField = new double[noiseFieldSize];
+        damageMaskA = new double[noiseFieldSize];
+        damageMaskB = new double[noiseFieldSize];
         buildScaleLookups();
     }
 
@@ -103,8 +123,8 @@ public class FrameMottler extends FrameProcessor {
             throw new Exception("FrameMottler requires at least three image channels");
         }
 
-        double[] brightnessField = buildMultiScaleNoiseField(info.frameNumber(), BRIGHTNESS_FIELD_SALT);
-        double[] stainField = buildMultiScaleNoiseField(info.frameNumber(), STAIN_FIELD_SALT);
+        buildMultiScaleNoiseField(info.frameNumber(), BRIGHTNESS_FIELD_SALT, brightnessField);
+        buildMultiScaleNoiseField(info.frameNumber(), STAIN_FIELD_SALT, stainField);
         int damageMaskSegment = info.frameNumber() / DAMAGE_MASK_BLEND_FRAMES;
         double damageMaskBlend = (info.frameNumber() % DAMAGE_MASK_BLEND_FRAMES) / (double) DAMAGE_MASK_BLEND_FRAMES;
         ensureDamageMaskFields(damageMaskSegment);
@@ -177,33 +197,31 @@ public class FrameMottler extends FrameProcessor {
         }
 
         cachedDamageMaskSegment = segment;
-        damageMaskA = buildNoiseField(segment, DAMAGE_MASK_SALT, DAMAGE_MASK_SMOOTHING_PASSES);
-        damageMaskB = buildNoiseField(segment + 1, DAMAGE_MASK_SALT, DAMAGE_MASK_SMOOTHING_PASSES);
+        buildNoiseField(segment, DAMAGE_MASK_SALT, DAMAGE_MASK_SMOOTHING_PASSES, damageMaskA);
+        buildNoiseField(segment + 1, DAMAGE_MASK_SALT, DAMAGE_MASK_SMOOTHING_PASSES, damageMaskB);
     }
 
-    private double[] buildMultiScaleNoiseField(int frameNumber, int fieldSalt) {
-        double[] fineField = buildNoiseField(frameNumber, fieldSalt ^ FINE_FIELD_SALT, FINE_SMOOTHING_PASSES);
-        double[] mediumField = buildNoiseField(frameNumber, fieldSalt ^ MEDIUM_FIELD_SALT, MEDIUM_SMOOTHING_PASSES);
-        double[] largeField = buildNoiseField(frameNumber, fieldSalt ^ LARGE_FIELD_SALT, LARGE_SMOOTHING_PASSES);
-        double[] field = new double[fineField.length];
+    private void buildMultiScaleNoiseField(int frameNumber, int fieldSalt, double[] field) {
+        buildNoiseField(frameNumber, fieldSalt ^ FINE_FIELD_SALT, FINE_SMOOTHING_PASSES, fineNoiseField);
+        buildNoiseField(frameNumber, fieldSalt ^ MEDIUM_FIELD_SALT, MEDIUM_SMOOTHING_PASSES, mediumNoiseField);
+        buildNoiseField(frameNumber, fieldSalt ^ LARGE_FIELD_SALT, LARGE_SMOOTHING_PASSES, largeNoiseField);
 
         for (int i = 0; i < field.length; i++) {
-            field[i] = fineField[i] * FINE_MOTTLE_WEIGHT
-                    + mediumField[i] * MEDIUM_MOTTLE_WEIGHT
-                    + largeField[i] * LARGE_MOTTLE_WEIGHT;
+            field[i] = fineNoiseField[i] * FINE_MOTTLE_WEIGHT
+                    + mediumNoiseField[i] * MEDIUM_MOTTLE_WEIGHT
+                    + largeNoiseField[i] * LARGE_MOTTLE_WEIGHT;
         }
 
         normaliseField(field);
-        return field;
     }
 
-    private double[] buildNoiseField(int frameNumber, int fieldSalt, int smoothingPasses) {
-        double[] field = new double[NOISE_GRID_WIDTH * NOISE_GRID_HEIGHT];
-        double[] scratch = new double[field.length];
-        Random random = new Random(seedForField(frameNumber, fieldSalt));
+    private void buildNoiseField(int frameNumber, int fieldSalt, int smoothingPasses, double[] destination) {
+        double[] field = noiseWorkspaceA;
+        double[] scratch = noiseWorkspaceB;
+        noiseRandom.setSeed(seedForField(frameNumber, fieldSalt));
 
         for (int i = 0; i < field.length; i++) {
-            field[i] = random.nextDouble();
+            field[i] = noiseRandom.nextDouble();
         }
 
         for (int pass = 0; pass < smoothingPasses; pass++) {
@@ -214,7 +232,7 @@ public class FrameMottler extends FrameProcessor {
         }
 
         normaliseField(field);
-        return field;
+        System.arraycopy(field, 0, destination, 0, field.length);
     }
 
     private long seedForField(int frameNumber, int fieldSalt) {
@@ -231,23 +249,32 @@ public class FrameMottler extends FrameProcessor {
     }
 
     private void smoothField(double[] source, double[] destination) {
+        int samplesPerCell = 9;
+        for (int cell = 0; cell < source.length; cell++) {
+            int neighbourStart = cell * samplesPerCell;
+            double total = 0.0;
+            for (int neighbour = 0; neighbour < samplesPerCell; neighbour++) {
+                total += source[smoothingNeighbourIndices[neighbourStart + neighbour]];
+            }
+            destination[cell] = total / samplesPerCell;
+        }
+    }
+
+    private int[] buildSmoothingNeighbourIndices() {
+        int[] indices = new int[NOISE_GRID_WIDTH * NOISE_GRID_HEIGHT * 9];
         for (int y = 0; y < NOISE_GRID_HEIGHT; y++) {
             for (int x = 0; x < NOISE_GRID_WIDTH; x++) {
-                double total = 0.0;
-                int samples = 0;
-
+                int index = (y * NOISE_GRID_WIDTH + x) * 9;
                 for (int dy = -1; dy <= 1; dy++) {
                     int sampleY = clamp(y + dy, 0, NOISE_GRID_HEIGHT - 1);
                     for (int dx = -1; dx <= 1; dx++) {
                         int sampleX = clamp(x + dx, 0, NOISE_GRID_WIDTH - 1);
-                        total += source[sampleY * NOISE_GRID_WIDTH + sampleX];
-                        samples++;
+                        indices[index++] = sampleY * NOISE_GRID_WIDTH + sampleX;
                     }
                 }
-
-                destination[y * NOISE_GRID_WIDTH + x] = total / samples;
             }
         }
+        return indices;
     }
 
     private void normaliseField(double[] field) {
@@ -279,7 +306,9 @@ public class FrameMottler extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
-        for (int blockY = 0; blockY < height; blockY += EFFECT_BLOCK_SIZE) {
+        int blockRowCount = (height + EFFECT_BLOCK_SIZE - 1) / EFFECT_BLOCK_SIZE;
+        forEachRow(blockRowCount, blockRow -> {
+            int blockY = blockRow * EFFECT_BLOCK_SIZE;
             int blockYEnd = Math.min(blockY + EFFECT_BLOCK_SIZE, height);
             int sampleY = (blockY + blockYEnd - 1) / 2;
 
@@ -287,12 +316,13 @@ public class FrameMottler extends FrameProcessor {
                 int blockXEnd = Math.min(blockX + EFFECT_BLOCK_SIZE, width);
                 int sampleX = (blockX + blockXEnd - 1) / 2;
 
-                if (!prepareScaleIndicesForBlock(
+                int scaleIndices = prepareScaleIndicesForBlock(
                         sampleX,
                         sampleY,
                         brightnessField,
                         stainField,
-                        damageMaskBlend)) {
+                        damageMaskBlend);
+                if (scaleIndices < 0) {
                     continue;
                 }
 
@@ -303,12 +333,13 @@ public class FrameMottler extends FrameProcessor {
                         blockY,
                         blockYEnd,
                         channels,
-                        stride);
+                        stride,
+                        scaleIndices);
             }
-        }
+        });
     }
 
-    private boolean prepareScaleIndicesForBlock(
+    private int prepareScaleIndicesForBlock(
             int x,
             int y,
             double[] brightnessField,
@@ -316,14 +347,13 @@ public class FrameMottler extends FrameProcessor {
             double damageMaskBlend) {
         double damageStrength = sampleDamageMask(x, y, damageMaskBlend);
         if (damageStrength <= 0.0) {
-            return false;
+            return -1;
         }
 
         double brightness = smoothstep(sampleField(brightnessField, x, y));
         double stain = smoothstep(sampleField(stainField, x, y));
 
-        setBlockScaleIndices(brightness, stain, damageStrength);
-        return true;
+        return setBlockScaleIndices(brightness, stain, damageStrength);
     }
 
     private double sampleDamageMask(int x, int y, double damageMaskBlend) {
@@ -347,7 +377,7 @@ public class FrameMottler extends FrameProcessor {
         return lerp(top, bottom, yBlend);
     }
 
-    private void setBlockScaleIndices(double brightness, double stain, double damageStrength) {
+    private int setBlockScaleIndices(double brightness, double stain, double damageStrength) {
         double brightnessScale;
         if (brightness < 0.5) {
             brightnessScale = 1.0 - (0.5 - brightness) * 2.0 * MAX_DARKEN_PERCENTAGE / 100.0;
@@ -363,9 +393,9 @@ public class FrameMottler extends FrameProcessor {
         double greenScale = brightnessScale * (1.0 + stainStrength * GREEN_STAIN_BOOST_PERCENTAGE / 100.0);
         double redScale = brightnessScale * (1.0 + stainStrength * RED_STAIN_BOOST_PERCENTAGE / 100.0);
 
-        blockBlueScaleIndex = scaleIndex(blueScale);
-        blockGreenScaleIndex = scaleIndex(greenScale);
-        blockRedScaleIndex = scaleIndex(redScale);
+        return (scaleIndex(blueScale) << (SCALE_INDEX_BITS * 2))
+                | (scaleIndex(greenScale) << SCALE_INDEX_BITS)
+                | scaleIndex(redScale);
     }
 
     private void applyMottleBlock(
@@ -375,10 +405,11 @@ public class FrameMottler extends FrameProcessor {
             int blockY,
             int blockYEnd,
             int channels,
-            int stride) {
-        byte[] blueLookup = scaleLookups[blockBlueScaleIndex];
-        byte[] greenLookup = scaleLookups[blockGreenScaleIndex];
-        byte[] redLookup = scaleLookups[blockRedScaleIndex];
+            int stride,
+            int scaleIndices) {
+        byte[] blueLookup = scaleLookups[(scaleIndices >>> (SCALE_INDEX_BITS * 2)) & SCALE_INDEX_MASK];
+        byte[] greenLookup = scaleLookups[(scaleIndices >>> SCALE_INDEX_BITS) & SCALE_INDEX_MASK];
+        byte[] redLookup = scaleLookups[scaleIndices & SCALE_INDEX_MASK];
 
         for (int y = blockY; y < blockYEnd; y++) {
             int rowStart = y * stride;

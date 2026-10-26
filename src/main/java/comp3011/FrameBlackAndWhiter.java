@@ -56,7 +56,26 @@ public class FrameBlackAndWhiter extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
-        for (int y = 0; y < height; y++) {
+        if (channels == 3) {
+            forEachRow(height, y -> {
+                int rowStart = y * stride;
+                for (int x = 0; x < width; x++) {
+                    int base = rowStart + x * 3;
+                    // JavaCV supplies these decoded frames in BGR byte order.
+                    int b = Byte.toUnsignedInt(pixels.get(base));
+                    int g = Byte.toUnsignedInt(pixels.get(base + 1));
+                    int r = Byte.toUnsignedInt(pixels.get(base + 2));
+                    byte luminance = (byte) ((54 * r + 183 * g + 19 * b) / 256);
+
+                    pixels.put(base, luminance);
+                    pixels.put(base + 1, luminance);
+                    pixels.put(base + 2, luminance);
+                }
+            });
+            return;
+        }
+
+        forEachRow(height, y -> {
             int rowStart = y * stride;
             for (int x = 0; x < width; x++) {
                 int base = rowStart + x * channels;
@@ -70,6 +89,6 @@ public class FrameBlackAndWhiter extends FrameProcessor {
                     pixels.put(base + channel, luminance);
                 }
             }
-        }
+        });
     }
 }
