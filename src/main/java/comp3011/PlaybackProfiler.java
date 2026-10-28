@@ -89,6 +89,7 @@ final class PlaybackProfiler {
             return;
         }
 
+        // Wall FPS includes scheduling gaps; active-stage FPS counts only measured decode/copy/effect/convert work.
         long effectsNanos = Arrays.stream(processorNanos).sum();
         long measuredNanos = decodeNanos + audioCopyNanos + effectsNanos + conversionNanos;
         long wallNanos = now - windowStartedNs;

@@ -69,6 +69,7 @@ public class CommandLineController {
         return maximiseRequested;
     }
 
+    /** Returns an immutable snapshot in command-line order, including repeated effects. */
     public List<FrameProcessorOption> getFrameProcessorOptions() {
         return List.copyOf(frameProcessorOptions);
     }
@@ -77,6 +78,7 @@ public class CommandLineController {
         return errorMessage == null && videoFile != null;
     }
 
+    /** Parses arguments left to right so appending effect options preserves their requested order. */
     private void parse() {
         List<String> videoFiles = new ArrayList<>();
         for (String arg : args) {
@@ -114,6 +116,7 @@ public class CommandLineController {
         }
     }
 
+    /** Resolves one long-form frame-effect option and records an error for unknown names. */
     private void parseLongOption(String arg) {
         FrameProcessorOption option = FrameProcessorOption.fromLongName(arg).orElse(null);
         if (option == null) {
@@ -123,6 +126,7 @@ public class CommandLineController {
         frameProcessorOptions.add(option);
     }
 
+    /** Processes combined short flags one character at a time, preserving effect order and repetitions. */
     private void parseShortOptions(String arg) {
         if (arg.length() == 1) {
             setErrorMessage("Unknown option: " + arg);
@@ -143,12 +147,14 @@ public class CommandLineController {
                         setErrorMessage("Unknown option: " + arg);
                         return;
                     }
+                    // Append each occurrence rather than using a set: order and duplicate effects are meaningful.
                     frameProcessorOptions.add(option);
                 }
             }
         }
     }
 
+    /** Keeps the first parsing error so a later validation failure cannot hide the original problem. */
     private void setErrorMessage(String message) {
         if (errorMessage == null) {
             errorMessage = message;

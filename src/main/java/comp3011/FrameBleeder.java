@@ -59,6 +59,7 @@ public class FrameBleeder extends FrameProcessor {
         brightMask = new double[maskWidth * maskHeight];
         horizontalBlurMask = new double[brightMask.length];
         blurredMask = new double[brightMask.length];
+        // Luminance has only 256 possible 8-bit values, so compute the gamma curve once per processor.
         brightnessLookup = new double[256];
         for (int luminance = 0; luminance < 256; luminance++) {
             brightnessLookup[luminance] = thresholdedBrightness(luminance);
@@ -131,6 +132,7 @@ public class FrameBleeder extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
+        // Each worker writes one separate row of the low-resolution mask.
         forEachRow(maskHeight, maskY -> {
             int blockY = maskY * MASK_BLOCK_SIZE;
             int blockYEnd = Math.min(blockY + MASK_BLOCK_SIZE, height);
@@ -173,6 +175,7 @@ public class FrameBleeder extends FrameProcessor {
     }
 
     private void blurHorizontally(double[] source, double[] destination) {
+        // The horizontal blur reads the source mask and writes disjoint destination rows.
         forEachRow(maskHeight, y -> {
             int rowStart = y * maskWidth;
             for (int x = 0; x < maskWidth; x++) {
@@ -191,6 +194,7 @@ public class FrameBleeder extends FrameProcessor {
     }
 
     private void blurVertically(double[] source, double[] destination) {
+        // This pass also writes distinct destination rows; it runs after the horizontal pass has joined.
         forEachRow(maskHeight, y -> {
             for (int x = 0; x < maskWidth; x++) {
                 double total = 0.0;
@@ -210,6 +214,7 @@ public class FrameBleeder extends FrameProcessor {
     private void sampleMaskHorizontally() {
         int width = videoInfo.imageWidth();
 
+        // Cache X interpolation for every mask row so applyBleed only performs the remaining Y interpolation.
         forEachRow(maskHeight, maskY -> {
             int maskRow = maskY * maskWidth;
             int outputRow = maskY * width;
@@ -232,6 +237,7 @@ public class FrameBleeder extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
+        // Each task modifies a distinct image row, so pixel writes do not overlap.
         forEachRow(height, y -> {
             int rowStart = y * stride;
 

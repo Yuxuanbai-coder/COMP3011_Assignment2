@@ -130,10 +130,12 @@ public class FrameJitterer extends FrameProcessor {
         int frameBytes = stride * height;
         int widthBytes = width * channels;
 
+        // Snapshot before writing because shifted destination rows can overlap the original source rows.
         ByteBuffer source = pixels.duplicate();
         source.clear();
         source.get(sourcePixels, 0, frameBytes);
 
+        // Clear each destination row independently before copying the shifted image into it.
         forEachRow(height, y -> {
             ByteBuffer destinationRow = pixels.duplicate();
             destinationRow.clear();
@@ -153,6 +155,7 @@ public class FrameJitterer extends FrameProcessor {
         int destinationXByteStart = destinationXStart * channels;
         int rowBytesToCopy = pixelsToCopy * channels;
 
+        // Copy from the immutable snapshot; each task writes to a distinct destination row.
         forEachRow(rowsToCopy, row -> {
             int sourceIndex = (sourceYStart + row) * stride + sourceXByteStart;
             int destinationIndex = (destinationYStart + row) * stride + destinationXByteStart;

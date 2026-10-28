@@ -33,6 +33,7 @@ import org.bytedeco.javacv.Frame;
  * </p>
  */
 public abstract class FrameProcessor {
+    // Small frames stay serial; larger frames are split into chunks to amortise task scheduling overhead.
     private static final int ROWS_PER_PARALLEL_TASK = 16;
     private static final int MIN_PARALLEL_ROW_COUNT = ROWS_PER_PARALLEL_TASK * 3;
 
@@ -65,9 +66,11 @@ public abstract class FrameProcessor {
     /**
      * Applies a row-independent image operation using the shared fork-join pool.
      * Small images stay on the calling thread to avoid task overhead. Callers must
-     * ensure each row writes to a disjoint part of the frame or workspace.
+     * ensure each row writes to a disjoint part of the frame or workspace. This
+     * method returns only after every row completes, preserving effect ordering.
      */
     protected final void forEachRow(int rowCount, IntConsumer rowOperation) {
+        // Avoid creating fork/join tasks when the image or available parallelism is too small to benefit.
         if (rowCount < MIN_PARALLEL_ROW_COUNT || ForkJoinPool.getCommonPoolParallelism() <= 1) {
             for (int row = 0; row < rowCount; row++) {
                 rowOperation.accept(row);
@@ -75,6 +78,7 @@ public abstract class FrameProcessor {
             return;
         }
 
+        // invoke is a completion barrier: the next effect cannot start while these rows are still being written.
         ForkJoinPool.commonPool().invoke(new RowRangeAction(0, rowCount, rowOperation));
     }
 
@@ -98,6 +102,7 @@ public abstract class FrameProcessor {
                 return;
             }
 
+            // Split into non-overlapping contiguous ranges so sibling tasks never write the same row.
             int middleRow = startRow + (endRow - startRow) / 2;
             invokeAll(
                     new RowRangeAction(startRow, middleRow, rowOperation),

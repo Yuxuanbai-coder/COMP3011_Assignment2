@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/** CLI regression coverage; the temporary .mp4 is a path placeholder and is not decoded as media. */
 class CommandLineControllerTest {
     @TempDir
     Path temporaryDirectory;

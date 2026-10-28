@@ -24,6 +24,8 @@ import org.bytedeco.javacv.Frame;
  * Initialisation builds multi-scale noise fields and colour lookup tables.
  * {@link #process(Frame, InfoFrame)} samples those fields in image blocks and
  * applies the selected channel scales through {@link #applyMottleBlock(ByteBuffer, int, int, int, int, int, int, int)}.
+ * Work arrays are reused between frames, so one instance must finish a frame
+ * before it begins another; its image blocks may still run concurrently.
  * </p>
  */
 public class FrameMottler extends FrameProcessor {
@@ -68,6 +70,7 @@ public class FrameMottler extends FrameProcessor {
     private int[] yGridTop;
     private double[] yGridBlend;
     private int[] smoothingNeighbourIndices;
+    // These scratch arrays are reused to avoid allocating noise grids for every frame.
     private double[] noiseWorkspaceA;
     private double[] noiseWorkspaceB;
     private double[] fineNoiseField;
@@ -78,6 +81,7 @@ public class FrameMottler extends FrameProcessor {
     private byte[][] scaleLookups;
     private double minimumScale;
     private double maximumScale;
+    // Noise generation is serial per instance; row-parallel image work starts after the fields are built.
     private final Random noiseRandom = new Random();
 
     public FrameMottler() {
@@ -91,7 +95,9 @@ public class FrameMottler extends FrameProcessor {
         mediaSeed = saltedMediaSeed(videoInfo.mediaName(), instanceIndex + SEED_SALT);
         cachedDamageMaskSegment = Integer.MIN_VALUE;
         buildSamplingLookups();
+        // Allocate reusable noise and damage-mask buffers once for this video's fixed grid dimensions.
         int noiseFieldSize = NOISE_GRID_WIDTH * NOISE_GRID_HEIGHT;
+        // Smoothing neighborhoods depend only on grid size, so cache their clamped indices during setup.
         smoothingNeighbourIndices = buildSmoothingNeighbourIndices();
         noiseWorkspaceA = new double[noiseFieldSize];
         noiseWorkspaceB = new double[noiseFieldSize];
@@ -216,6 +222,7 @@ public class FrameMottler extends FrameProcessor {
     }
 
     private void buildNoiseField(int frameNumber, int fieldSalt, int smoothingPasses, double[] destination) {
+        // Reuse two workspaces for smoothing, then copy only the final field into its retained destination.
         double[] field = noiseWorkspaceA;
         double[] scratch = noiseWorkspaceB;
         noiseRandom.setSeed(seedForField(frameNumber, fieldSalt));
@@ -249,6 +256,7 @@ public class FrameMottler extends FrameProcessor {
     }
 
     private void smoothField(double[] source, double[] destination) {
+        // Each cell has nine clamp-to-edge samples; their positions were precomputed during initialise().
         int samplesPerCell = 9;
         for (int cell = 0; cell < source.length; cell++) {
             int neighbourStart = cell * samplesPerCell;
@@ -306,6 +314,7 @@ public class FrameMottler extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
+        // A task owns a band of four image rows, so neighboring tasks cannot write the same pixels.
         int blockRowCount = (height + EFFECT_BLOCK_SIZE - 1) / EFFECT_BLOCK_SIZE;
         forEachRow(blockRowCount, blockRow -> {
             int blockY = blockRow * EFFECT_BLOCK_SIZE;
@@ -393,6 +402,7 @@ public class FrameMottler extends FrameProcessor {
         double greenScale = brightnessScale * (1.0 + stainStrength * GREEN_STAIN_BOOST_PERCENTAGE / 100.0);
         double redScale = brightnessScale * (1.0 + stainStrength * RED_STAIN_BOOST_PERCENTAGE / 100.0);
 
+        // Pack block-local indices instead of shared fields, preventing parallel block tasks from overwriting them.
         return (scaleIndex(blueScale) << (SCALE_INDEX_BITS * 2))
                 | (scaleIndex(greenScale) << SCALE_INDEX_BITS)
                 | scaleIndex(redScale);

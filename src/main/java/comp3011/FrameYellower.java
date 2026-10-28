@@ -119,6 +119,7 @@ public class FrameYellower extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
+        // Lookup tables are read-only here and every task writes to a disjoint image row.
         forEachRow(height, y -> {
             int rowStart = y * stride;
             for (int x = 0; x < width; x++) {

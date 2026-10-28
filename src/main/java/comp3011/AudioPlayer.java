@@ -67,6 +67,7 @@ public class AudioPlayer implements AutoCloseable {
                 if (!(samples[channel] instanceof ShortBuffer channelSamples)) {
                     return new byte[0];
                 }
+                // Duplicate decoder-owned buffers so reading samples does not change their positions.
                 planarSamples[channel] = channelSamples.duplicate();
                 sampleCount = Math.min(sampleCount, planarSamples[channel].remaining());
             }
@@ -76,6 +77,7 @@ public class AudioPlayer implements AutoCloseable {
             }
             byte[] pcm = new byte[sampleCount * channels * Short.BYTES];
             int outputIndex = 0;
+            // Java Sound expects interleaved frames: one sample from each channel before the next frame.
             for (int sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
                 for (ShortBuffer channelSamples : planarSamples) {
                     outputIndex = writeLittleEndian(pcm, outputIndex, channelSamples.get());
@@ -85,6 +87,7 @@ public class AudioPlayer implements AutoCloseable {
         }
 
         if (samples[0] instanceof ShortBuffer packedSamples) {
+            // The packed path also reads through a duplicate to leave JavaCV's frame buffer untouched.
             ShortBuffer source = packedSamples.duplicate();
             byte[] pcm = new byte[source.remaining() * Short.BYTES];
             int outputIndex = 0;

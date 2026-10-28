@@ -121,6 +121,7 @@ public class FrameVignetter extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
+        // Keep the original X-then-Y lookup order while avoiding the generic per-pixel channel loop for BGR frames.
         if (channels == 3) {
             forEachRow(height, y -> {
                 int rowStart = y * stride;
@@ -146,6 +147,7 @@ public class FrameVignetter extends FrameProcessor {
             return;
         }
 
+        // The generic path remains available for other channel counts; each task writes a separate row.
         forEachRow(height, y -> {
             int rowStart = y * stride;
             byte[] yLookup = yLookups[y];

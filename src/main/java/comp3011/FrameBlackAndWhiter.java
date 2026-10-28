@@ -56,6 +56,7 @@ public class FrameBlackAndWhiter extends FrameProcessor {
         int channels = videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
+        // BGR is the common format; spelling out its three channels avoids a per-pixel channel loop.
         if (channels == 3) {
             forEachRow(height, y -> {
                 int rowStart = y * stride;
@@ -75,6 +76,7 @@ public class FrameBlackAndWhiter extends FrameProcessor {
             return;
         }
 
+        // Each task owns one output row; the fallback keeps unusual channel counts supported.
         forEachRow(height, y -> {
             int rowStart = y * stride;
             for (int x = 0; x < width; x++) {

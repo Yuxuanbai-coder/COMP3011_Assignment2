@@ -79,6 +79,7 @@ public class FrameFlickerer extends FrameProcessor {
         int widthBytes = videoInfo.imageWidth() * videoInfo.imageChannels();
         int stride = videoInfo.imageStride();
 
+        // The lookup is read-only and each task dims pixels in a separate row.
         forEachRow(height, y -> {
             int rowStart = y * stride;
             for (int offset = 0; offset < widthBytes; offset++) {

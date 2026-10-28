@@ -8,6 +8,7 @@ package comp3011;
 
 /** Commands that configure or synchronise the dedicated audio-output worker. */
 sealed interface AudioOutputCommand {
+    /** Opens the output line for the specified playback generation and decoded PCM format. */
     record Open(long playbackGeneration, int sampleRate, int channels) implements AudioOutputCommand {
     }
 
@@ -19,6 +20,7 @@ sealed interface AudioOutputCommand {
     record Flush(long playbackGeneration) implements AudioOutputCommand {
     }
 
+    /** Closes the output line after stop, replacement media, or an audio failure. */
     record Close(long playbackGeneration) implements AudioOutputCommand {
     }
 
@@ -26,6 +28,7 @@ sealed interface AudioOutputCommand {
     record DrainAndClose(long playbackGeneration) implements AudioOutputCommand {
     }
 
+    /** Ends the worker loop after queued output resources have been released. */
     enum Shutdown implements AudioOutputCommand {
         INSTANCE
     }

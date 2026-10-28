@@ -51,10 +51,13 @@ public class VideoPlayerModel {
     private final PlaybackProfiler playbackProfiler;
     // The playback worker consumes commands and produces frames and UI events.
     private final BlockingQueue<PlaybackCommand> playbackCommands = new LinkedBlockingQueue<>();
+    // A small bounded queue limits image memory and pauses decoding when the display falls behind.
     private final BlockingQueue<PreparedFrame> preparedFrames = new ArrayBlockingQueue<>(FRAME_QUEUE_CAPACITY);
     // Decoded PCM packets cross from the playback worker to the audio-output worker.
     private final BlockingQueue<AudioPacket> audioPackets = new ArrayBlockingQueue<>(AUDIO_QUEUE_CAPACITY);
+    // Only audioOutputWorker creates, uses, flushes, or closes AudioPlayer in response to these commands.
     private final BlockingQueue<AudioOutputCommand> audioOutputCommands = new LinkedBlockingQueue<>();
+    // Worker threads publish immutable events here; AnimationTimer applies them on the JavaFX thread.
     private final BlockingQueue<PlaybackEvent> playbackEvents = new LinkedBlockingQueue<>();
     private final AtomicLong displayedTimestampUs = new AtomicLong();
     private final AtomicLong relativeSeekBaseUs = new AtomicLong(NO_SEEK_REQUEST);
@@ -63,6 +66,7 @@ public class VideoPlayerModel {
             new AudioClock(0, NO_SEEK_REQUEST, 0, true, false));
     private final AtomicBoolean shutdownCommandQueued = new AtomicBoolean();
     private volatile boolean audioOutputEnabledSnapshot;
+    // Read and updated only by the JavaFX AnimationTimer while draining playbackEvents.
     private boolean pausedSnapshot;
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
@@ -174,6 +178,7 @@ public class VideoPlayerModel {
         enqueueCommand(PlaybackCommand.Stop.INSTANCE);
     }
 
+    /** Requests both workers to stop; each worker closes the native resources it exclusively owns. */
     public void shutdown() {
         if (shutdownCommandQueued.compareAndSet(false, true)) {
             shutdownRequested = true;
@@ -186,12 +191,14 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Keeps decoder and playback-state mutations serialized on playbackWorker. */
     private void enqueueCommand(PlaybackCommand command) {
         if (!shutdownCommandQueued.get() || command == PlaybackCommand.Shutdown.INSTANCE) {
             playbackCommands.offer(command);
         }
     }
 
+    /** Owns the decoder and frame converter, checking queued controls between frame-preparation steps. */
     private void runPlaybackWorker() {
         try {
             while (!shutdownRequested) {
@@ -228,6 +235,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Applies UI commands on playbackWorker so JavaFX callbacks never mutate decoder state directly. */
     private void handlePlaybackCommand(PlaybackCommand command) {
         if (command instanceof PlaybackCommand.Play playCommand) {
             videoFile = playCommand.file();
@@ -268,6 +276,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Changes pause state on the owner thread and updates the audio clock and buffered output with it. */
     private void togglePauseOnPlaybackWorker() {
         if (!playbackOpen) {
             if (videoFile != null) {
@@ -293,6 +302,7 @@ public class VideoPlayerModel {
         notifyPlaybackStateChanged();
     }
 
+    /** Bases relative seeks on the visible frame, not a frame that may still be decoding. */
     private void seekRelative(long offsetUs) {
         if (videoFile == null) {
             return;
@@ -305,6 +315,7 @@ public class VideoPlayerModel {
         seekTo(baseTimestampUs + offsetUs);
     }
 
+    /** Invalidates queued work before moving the decoder so output from the previous position cannot reappear. */
     private void seekTo(long timestampUs) {
         long logicalTimestampUs = clampSeekTimestamp(timestampUs);
         long grabTimestampUs = displayableSeekTimestamp(logicalTimestampUs);
@@ -315,6 +326,7 @@ public class VideoPlayerModel {
         }
 
         try {
+            // Advance the generation first so any already-in-flight old frame or audio packet is rejected.
             playbackGeneration++;
             activePlaybackGeneration.set(playbackGeneration);
             preparedFrames.clear();
@@ -332,6 +344,7 @@ public class VideoPlayerModel {
     }
 
     private void startPlayback(long startTimestampUs, boolean initiallyPaused, long initialRelativeSeekBaseUs) {
+        // A fresh generation separates this run from frames and packets left by the previous run.
         playbackGeneration++;
         activePlaybackGeneration.set(playbackGeneration);
         closePlaybackResources();
@@ -357,6 +370,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Opens native decode resources on playbackWorker and asks audioOutputWorker to open its device. */
     private void openPlaybackResources(long startTimestampUs) throws Exception {
         converter = new JavaFXFrameConverter();
         grabber = new FFmpegFrameGrabber(videoFile);
@@ -392,6 +406,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Clears queued work and establishes a new logical timestamp anchor for both video and audio. */
     private void resetPlaybackClock(long logicalTimestampUs) {
         preparedFrames.clear();
         audioPackets.clear();
@@ -408,6 +423,7 @@ public class VideoPlayerModel {
     private void resumePlaybackClock(long now) {
         if (pauseStartedNs > 0 && playbackStartNs > 0) {
             long pauseDurationNs = now - pauseStartedNs;
+            // Move the clock forward by the paused duration so media time does not advance while paused.
             playbackStartNs += pauseDurationNs;
             retimeQueuedFrames(pauseDurationNs);
         }
@@ -438,6 +454,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Produces at most one frame per worker-loop turn and respects the bounded display queue. */
     private void prepareNextFrame() {
         if (!playbackOpen || pauseRequested || preparedFrames.remainingCapacity() == 0) {
             return;
@@ -453,6 +470,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Decodes and processes one display frame while queueing audio samples from the same media timestamp. */
     private PreparedFrame readNextVideoFrame() throws Exception {
         while (playbackOpen) {
             long decodeStartedNs = playbackProfiler.enabled() ? System.nanoTime() : 0;
@@ -527,8 +545,10 @@ public class VideoPlayerModel {
         return null;
     }
 
-    // This is called on the JavaFX thread. It never waits for decoding: it only drains
-    // completed state events and displays a frame already prepared by playbackWorker.
+    /**
+     * Runs on JavaFX without waiting for decoding: drain events, discard stale generations,
+     * and display only the newest prepared frame currently due.
+     */
     private void pumpPlayback(long now) {
         drainPlaybackEvents();
         if (pausedSnapshot) {
@@ -556,6 +576,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Executes worker notifications here so every view callback remains on the JavaFX application thread. */
     private void drainPlaybackEvents() {
         PlaybackEvent event;
         while ((event = playbackEvents.poll()) != null) {
@@ -576,6 +597,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Commits the selected due frame to the view and records its position for subsequent seek commands. */
     private void displayPreparedFrame(long now, PreparedFrame frame) {
         displayedTimestampUs.set(frame.logicalTimestampUs());
         relativeSeekBaseUs.set(NO_SEEK_REQUEST);
@@ -671,6 +693,7 @@ public class VideoPlayerModel {
                     continue;
                 }
 
+                // Use the same monotonic playback anchor as video and keep audio a small amount ahead of display.
                 long dueTimestampUs = clock.firstTimestampUs()
                         + (System.nanoTime() + AUDIO_LEAD_NS - clock.playbackStartNs()) / 1_000L;
                 if (state.pending.timestampUs() > dueTimestampUs) {
@@ -706,6 +729,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Runs only on audioOutputWorker, which is the sole owner of AudioPlayer and its device line. */
     private void processAudioOutputCommands(AudioOutputState state) throws InterruptedException {
         AudioOutputCommand command;
         while ((command = audioOutputCommands.poll()) != null) {
@@ -752,6 +776,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Closes after both the pending partial packet and the shared queue have been fully consumed. */
     private boolean finishAudioDrainIfReady(AudioOutputState state) {
         if (!state.drainAndClose
                 || state.player == null
@@ -772,6 +797,7 @@ public class VideoPlayerModel {
         return true;
     }
 
+    /** Returns device failures to playbackWorker as a generation-tagged command instead of touching the UI here. */
     private void reportAudioFailure(AudioOutputState state, Exception error) {
         long failedGeneration = state.playbackGeneration;
         closeAudioOutput(state);
@@ -784,6 +810,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Releases the audio line on its owning worker and invalidates that worker's active generation. */
     private void closeAudioOutput(AudioOutputState state) {
         if (state.player != null) {
             try {
@@ -796,6 +823,7 @@ public class VideoPlayerModel {
         state.playbackGeneration = -1;
     }
 
+    /** Publishes an immutable timing snapshot so audio sees one consistent generation and pause state. */
     private void publishAudioClock() {
         audioClock.set(new AudioClock(
                 playbackGeneration,
@@ -805,6 +833,7 @@ public class VideoPlayerModel {
                 audioOutputEnabled && audioAvailable));
     }
 
+    /** Ignores stale device errors and disables audio only for the playback generation that failed. */
     private void handleAudioFailure(PlaybackCommand.AudioFailure failure) {
         if (failure.playbackGeneration() != playbackGeneration) {
             return;
@@ -835,6 +864,7 @@ public class VideoPlayerModel {
         notifyPlaybackStateChanged();
     }
 
+    /** Invalidates queued output before publishing the error state to JavaFX. */
     private void handlePlaybackError(Exception e) {
         e.printStackTrace();
         playbackGeneration++;
@@ -850,6 +880,7 @@ public class VideoPlayerModel {
         closePlaybackResources(false);
     }
 
+    /** Called only by playbackWorker; the audio device is closed separately by audioOutputWorker. */
     private void closePlaybackResources(boolean drainAudio) {
         playbackOpen = false;
         if (!drainAudio) {
@@ -921,6 +952,7 @@ public class VideoPlayerModel {
         return Math.max(0, durationUs - frameDurationUs);
     }
 
+    /** Effects stay sequential to preserve CLI order; each effect may parallelize only its independent rows. */
     private void processFrame(Frame frame, InfoFrame info) throws Exception {
         for (int index = 0; index < frameProcessors.size(); index++) {
             FrameProcessor processor = frameProcessors.get(index);
@@ -932,6 +964,7 @@ public class VideoPlayerModel {
         }
     }
 
+    /** Initialises every selected processor once per video, retaining the command-line effect order. */
     private void initialiseFrameProcessors(InfoVideo videoInfo) throws Exception {
         for (FrameProcessor processor : frameProcessors) {
             processor.initialise(videoInfo);
@@ -965,6 +998,7 @@ public class VideoPlayerModel {
         playbackEvents.offer(new PlaybackEvent.AudioOutputStateChanged(audioOutputEnabled));
     }
 
+    /** Immutable playback-time snapshot shared with audioOutputWorker through an AtomicReference. */
     private record AudioClock(
             long playbackGeneration,
             long firstTimestampUs,
@@ -973,6 +1007,7 @@ public class VideoPlayerModel {
             boolean enabled) {
     }
 
+    /** Mutable device state kept local to audioOutputWorker, so it needs no cross-thread locks. */
     private static class AudioOutputState {
         private AudioPlayer player;
         private long playbackGeneration = -1;
@@ -982,6 +1017,7 @@ public class VideoPlayerModel {
         private boolean shutdownRequested;
     }
 
+    /** Tracks partial non-blocking writes for one timestamped PCM packet on audioOutputWorker. */
     private static class PendingAudio {
         private final long playbackGeneration;
         private final long timestampUs;
